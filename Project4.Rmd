@@ -1,0 +1,199 @@
+---
+title: "CUNY SPS - Master of Science in Data Science - DATA607"
+author: "Mario Pena"
+date: "November 10, 2019"
+output: 
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Project 4: Document Classification
+
+
+It can be useful to be able to classify new "test" documents using already classified "training" documents.  A common example is using a corpus of labeled spam and ham (non-spam) e-mails to predict whether or not a new document is spam.  
+
+In this project we are asked to start with a spam/ham dataset, then predict the class of new documents (either withheld from the training dataset or from another source such as your own spam folder).
+
+I have chosen to work on a corpus of labeled spam and ham SMS that I found from The University of California, Irvine (UCI), who make use of the data collected by "http://www.dt.fee.unicamp.br/~tiago/smsspamcollection/".
+
+## Load Data
+
+I will first load the data, which I have unzipped and saved in a github repository in order to reproduce the code from any computer:
+
+```{r}
+data_location <- "https://raw.githubusercontent.com/marioipena/Project4DATA607/master/SMSSpamCollection.txt"
+sms_data <- read.table(data_location, header = FALSE, sep = "\t", quote = "", stringsAsFactors = FALSE)
+```
+
+## Column Names
+
+Although the data only has two columns, I will add names to each column in order to identify them more efficiently in our analysis:
+
+```{r}
+colnames(sms_data)[1:2] <- c("type", "text")
+head(sms_data)
+```
+We can already see that some of the words in the spam messages include "Free" and "Text".
+
+
+## Explore and Check for Missing Values
+
+```{r}
+library(ggplot2)
+
+#Convert class type into factor to be used in plot below
+sms_data$type <- as.factor(sms_data$type)
+
+sms_data$textLength <- nchar(sms_data$text)
+
+ggplot(sms_data, aes(x = textLength, fill = type)) + 
+  theme_bw() +
+  geom_histogram(binwidth = 5) +
+  labs(y = "Text Count", x = "Length of Text", title = "Distribution of Text Lengths with Class Type")
+
+prop.table(table(sms_data$type))
+
+length(which(!complete.cases(sms_data)))
+```
+
+Roughly 86.6% of our observations are ham messages and roughly 13.4% are spam messages. Additionally, we have no missing values in our data.
+
+
+## Creating and Cleaning Corpus
+
+I will use the "tm" library to create and clean the corpus from the SMS data:
+
+```{r}
+library(tm)
+
+#Create corpus
+corpus <- Corpus(VectorSource(sms_data$text))
+
+#We clean the corpus to make all letters lower case, remove numbers, punctuation, stop words and excess white space.
+cleanCorpus <- tm_map(corpus, tolower)
+cleanCorpus <- tm_map(cleanCorpus, removeNumbers)
+cleanCorpus <- tm_map(cleanCorpus, removePunctuation)
+cleanCorpus <- tm_map(cleanCorpus, removeWords, stopwords())
+cleanCorpus <- tm_map(cleanCorpus, stripWhitespace)
+
+inspect(cleanCorpus[1:6])
+```
+
+
+## Tokenize and Visualization
+
+We make our words a single element in each text string by using the `DocumentTermMatrix` function and vizualize the frequency of words using `wordcloud`:
+
+```{r}
+library(wordcloud)
+
+sms_dtm <- DocumentTermMatrix(cleanCorpus)
+inspect(sms_dtm[1:6, 1:6])
+
+sms_ham <- which(sms_data$type == "ham")
+sms_spam <- which(sms_data$type == "spam")
+```
+
+
+## Visualize Ham Corpus
+
+```{r}
+#Ham wordcloud
+wordcloud(words = cleanCorpus[sms_ham], max.words = 80, random.order = FALSE, rot.per=0.35, colors=brewer.pal(7, "Dark2"))
+```
+
+
+## Visualize Spam Corpus
+
+```{r}
+#Spam wordcloud
+wordcloud(words = cleanCorpus[sms_spam], max.words = 80, random.order = FALSE, rot.per=0.35, colors=brewer.pal(7, "Dark2"))
+```
+
+
+## Classification and Modeling
+
+We will divide the corpus into two sets of data, training and test. We want to make sure our parameter estimates and performance statistic have minimum variance, thus we will use 80% of the data for training and 20% for testing, which is generally how the data is divided for predictive modeling:
+
+```{r}
+#80% of the data for the training set
+sms_train <- sms_data[1:4459,]
+#20% of the data for the test set
+sms_test <- sms_data[4460:5574,]
+
+sms_dtm_train <- sms_dtm[1:4459,]
+sms_dtm_test <- sms_dtm[4460:5574,]
+
+sms_corpus_train <- cleanCorpus[1:4459]
+sms_corpus_test <- cleanCorpus[4460:5574]
+```
+
+We will also check below to make sure that the split of our data is as representative of the original data set as possible:
+```{r}
+prop.table(table(sms_train$type))
+prop.table(table(sms_test$type))
+```
+
+Roughly 86.5% of our observations are ham messages and roughly 13.5% are spam messages in our training data, and roughly 87% are ham and roughly 13% are spam in our test data. We can conclude that the split of our data is representative in terms of proportions of our original data set.
+
+We will identify frequently used words, in this case we want words that have a frequency of at least 5 as to not saturate the classifier with words that have not been used frequently:
+
+```{r}
+frequentWords <- findFreqTerms(sms_dtm_train, 5)
+
+frequentWords[1:6]
+```
+
+```{r}
+#Create document-term matrices to be used in our model using frequent words
+sms_train_model <- DocumentTermMatrix(sms_corpus_train, control=list(dictionary = frequentWords))
+
+sms_test_model <- DocumentTermMatrix(sms_corpus_test, control=list(dictionary = frequentWords))
+```
+
+We convert the numeric entries in the term matrices into factors through a function that indicates whether the term is present (Yes) or absent (No).
+
+```{r}
+convertCount <- function(x) {
+  y <- ifelse(x > 0, 1,0)
+  y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+  y
+}
+
+sms_train_model <- apply(sms_train_model, 2, convertCount)
+sms_test_model <- apply(sms_test_model, 2, convertCount)
+```
+
+
+## Training and Testing Model
+
+In this step we will train the prediction model and derive this prediction using the test data:
+
+```{r}
+library(e1071)
+
+#Training the model using Naive Bayes classifier
+smsClassifier <- naiveBayes(sms_train_model, factor(sms_train$type))
+
+#Predict messages in the test data based on the probabilities from the training data.
+smsTestPred <- predict(smsClassifier, newdata=sms_test_model)
+
+table(smsTestPred, sms_test$type)
+```
+
+
+## Performance Conclusion
+
+```{r}
+hamAccuracy <- 967/970
+hamAccuracy
+spamAccuracy <- 130/145
+spamAccuracy
+```
+
+According to our model "ham" text messages are predicted correctly roughly 99.7% of the time and "spam" text messages are predicted correctly roughly 89.7% of the time. Based on these results we can determine that our model is very accurate at predicting "ham" and "spam" text messages.
